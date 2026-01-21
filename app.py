@@ -24,7 +24,14 @@ import io
 # Add the project root to the path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from scripts.symmetry_detector import SymmetryDetector, load_trajectory_data
-from scripts.analyze_logs import compute_moving_average
+
+# Define compute_moving_average directly (no need to import from analyze_logs)
+def compute_moving_average(data: np.ndarray, window: int = 10) -> np.ndarray:
+    """Compute moving average of a timeseries."""
+    if len(data) < window:
+        return data
+    weights = np.ones(window) / window
+    return np.convolve(data, weights, mode='valid')
 
 
 # Page configuration

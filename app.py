@@ -67,7 +67,7 @@ st.markdown("""
 
 
 def init_session_state():
-    """Initialize session state variables."""
+    """Initialize session state variables and load default demo data."""
     if 'datasets' not in st.session_state:
         st.session_state.datasets = {}  # Multiple datasets
     if 'current_dataset' not in st.session_state:
@@ -78,6 +78,35 @@ def init_session_state():
         st.session_state.comparison_mode = False
     if 'analysis_cache' not in st.session_state:
         st.session_state.analysis_cache = {}
+    
+    # Auto-load demo data on first visit
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = True
+        
+        # Generate default demo data
+        states, actions, rewards, next_states = create_demo_data(
+            timesteps=1000, 
+            dim_state=8, 
+            dim_action=2, 
+            noise_level=0.15
+        )
+        
+        st.session_state.datasets["demo_biped_locomotion"] = {
+            "states": states,
+            "actions": actions,
+            "rewards": rewards,
+            "next_states": next_states,
+            "source": "auto_demo",
+            "timestamp": datetime.now(),
+            "params": {
+                "timesteps": 1000,
+                "state_dim": 8,
+                "action_dim": 2,
+                "noise": 0.15,
+                "description": "Biped locomotion with realistic gait patterns"
+            }
+        }
+        st.session_state.current_dataset = "demo_biped_locomotion"
 
 
 def load_sample_csv_data(csv_path):
@@ -108,51 +137,73 @@ def load_sample_csv_data(csv_path):
 
 def create_demo_data(timesteps=1000, dim_state=8, dim_action=2, noise_level=0.1):
     """
-    Create synthetic data with configurable parameters.
+    Create realistic synthetic biped locomotion data with rich patterns.
     
     Args:
         timesteps: Number of timesteps
-        dim_state: State dimension
+        dim_state: State dimension (minimum 8 for biped)
         dim_action: Action dimension
         noise_level: Amount of random noise (0-1)
     """
     np.random.seed(42)
     
+    # Time array
+    t_array = np.linspace(0, 10, timesteps)
+    
+    # Create rich state patterns (mimicking biped robot)
     states = np.zeros((timesteps, dim_state))
+    
+    # Dimension 0-1: Hip positions with walking gait (sinusoidal)
+    frequency = 2.0  # Hz
+    states[:, 0] = 0.3 * np.sin(2 * np.pi * frequency * t_array) + noise_level * np.random.randn(timesteps) * 0.05
+    states[:, 1] = 0.3 * np.cos(2 * np.pi * frequency * t_array) + noise_level * np.random.randn(timesteps) * 0.05
+    
+    # Dimension 2-3: Knee angles with phase shift
+    states[:, 2] = 0.4 * np.sin(2 * np.pi * frequency * t_array + np.pi/4) + noise_level * np.random.randn(timesteps) * 0.03
+    states[:, 3] = 0.4 * np.cos(2 * np.pi * frequency * t_array + np.pi/4) + noise_level * np.random.randn(timesteps) * 0.03
+    
+    # Dimension 4-5: Torso position and orientation
+    states[:, 4] = 0.1 * np.sin(4 * np.pi * frequency * t_array) + noise_level * np.random.randn(timesteps) * 0.02
+    states[:, 5] = 1.0 + 0.05 * np.cos(2 * np.pi * frequency * t_array) + noise_level * np.random.randn(timesteps) * 0.01
+    
+    # Dimension 6-7: Angular velocities
+    if dim_state > 6:
+        states[:, 6] = np.gradient(states[:, 0], t_array) + noise_level * np.random.randn(timesteps) * 0.01
+        states[:, 7] = np.gradient(states[:, 1], t_array) + noise_level * np.random.randn(timesteps) * 0.01
+    
+    # Additional dimensions if needed
+    for i in range(8, dim_state):
+        states[:, i] = 0.1 * noise_level * np.random.randn(timesteps)
+    
+    # Create actions correlated with states
     actions = np.zeros((timesteps, dim_action))
-    rewards = np.zeros(timesteps)
-    next_states = np.zeros((timesteps, dim_state))
+    actions[:, 0] = 0.5 * np.sin(2 * np.pi * frequency * t_array + np.pi/6) + noise_level * np.random.randn(timesteps) * 0.05
+    if dim_action > 1:
+        actions[:, 1] = 0.5 * np.cos(2 * np.pi * frequency * t_array - np.pi/6) + noise_level * np.random.randn(timesteps) * 0.05
     
-    for t in range(timesteps // 2):
-        # Position with periodic pattern
-        states[t, 0] = np.sin(t/50)
-        states[t, 1] = np.cos(t/50)
-        states[t, 2:4] = noise_level * np.random.normal(0, 0.1, 2)
-        states[t, 4:] = 0.1 * noise_level * np.random.normal(0, 1, dim_state-4)
-        
-        # Actions with periodic pattern
-        actions[t, 0] = 0.5 * np.sin(t/30)
-        if dim_action > 1:
-            actions[t, 1] = 0.5 * np.cos(t/30)
-        
-        # Mirror for second half
-        mirror_t = timesteps - t - 1
-        states[mirror_t] = states[t].copy()
-        states[mirror_t, 0] *= -1
-        if dim_state > 4:
-            states[mirror_t, 4:] *= -1
-        
-        actions[mirror_t] = actions[t].copy()
-        actions[mirror_t, 0] *= -1
-        
-        # Rewards
-        rewards[t] = rewards[mirror_t] = np.abs(np.sin(t/100))
-        
-        if t < timesteps // 2 - 1:
-            next_states[t] = states[t+1]
-            next_states[mirror_t-1] = states[mirror_t]
+    # Add more actions if needed
+    for i in range(2, dim_action):
+        actions[:, i] = 0.3 * np.sin(2 * np.pi * frequency * t_array + i) + noise_level * np.random.randn(timesteps) * 0.05
     
-    next_states[-1] = states[0]
+    # Rewards: Higher when movement is smooth and symmetric
+    # Calculate smoothness (inverse of acceleration magnitude)
+    velocity = np.diff(states[:, :2], axis=0)
+    velocity_mag = np.linalg.norm(velocity, axis=1)
+    smoothness = 1.0 / (1.0 + np.abs(np.diff(velocity_mag)))
+    smoothness = np.concatenate([[smoothness[0]], smoothness, [smoothness[-1]]])  # Pad to match timesteps
+    
+    # Calculate symmetry (similarity between left and right)
+    symmetry = 1.0 - np.abs(states[:, 0] + states[:, 1]) / 2.0
+    
+    # Combine factors for reward
+    rewards = 0.5 * smoothness + 0.3 * symmetry + 0.2 * np.sin(2 * np.pi * frequency * t_array / 2)
+    rewards = np.maximum(rewards, 0.0)  # Keep positive
+    rewards += noise_level * np.random.randn(timesteps) * 0.1
+    rewards = np.clip(rewards, 0.0, 1.0)
+    
+    # Create next_states
+    next_states = np.roll(states, -1, axis=0)
+    next_states[-1] = states[-1]  # Last state transitions to itself
     
     return states, actions, rewards, next_states
 
@@ -472,6 +523,10 @@ def main():
             dataset_names = list(st.session_state.datasets.keys())
             selected_dataset = st.selectbox("Select Dataset", dataset_names)
             st.session_state.current_dataset = selected_dataset
+            
+            # Show if it's the default demo
+            if selected_dataset == "demo_biped_locomotion":
+                st.success("✅ Default demo data loaded")
         else:
             st.info("No datasets loaded. Upload or generate data below.")
             selected_dataset = None
@@ -597,27 +652,7 @@ def main():
     
     # Main content area
     if not st.session_state.datasets:
-        st.info("👈 Please load or generate data from the sidebar to begin analysis.")
-        
-        # Show demo information
-        with st.expander("📖 About Demo Data"):
-            st.markdown("""
-            **Demo Data Characteristics:**
-            
-            - **Synthetic dataset** created for demonstration purposes
-            - Contains **periodic and symmetric patterns** mimicking robot locomotion
-            - First half follows smooth sinusoidal patterns
-            - Second half is a **mirrored version** to demonstrate symmetry detection
-            - Includes configurable noise to simulate real-world data
-            - **Not from actual robot experiments** - designed for testing dashboard features
-            
-            **How to use:**
-            1. Adjust parameters in the sidebar (timesteps, dimensions, noise level)
-            2. Click "Generate Data" to create synthetic trajectories
-            3. Explore all dashboard features with this data
-            4. Upload your own RL logs when ready for real analysis
-            """)
-        
+        st.info("⚠️ No datasets loaded. Reloading page will restore default demo data.")
         return
     
     # Get current dataset
@@ -751,6 +786,61 @@ def main():
                     ))
                 fig_ts.update_layout(xaxis_title='Timestep', yaxis_title='Value', height=400)
                 st.plotly_chart(fig_ts, use_container_width=True)
+        
+        # Raw Data Table
+        st.markdown("---")
+        st.subheader("📋 Raw Data Table")
+        
+        col_display, col_export = st.columns([3, 1])
+        
+        with col_display:
+            show_rows = st.slider("Number of rows to display", 10, 100, 50, 10, key="traj_rows")
+        
+        with col_export:
+            st.write("")  # Spacer
+            st.write("")  # Spacer
+            
+            # Prepare CSV export
+            df_export = pd.DataFrame(
+                np.hstack([
+                    np.arange(len(states)).reshape(-1, 1),
+                    states,
+                    actions,
+                    rewards.reshape(-1, 1)
+                ]),
+                columns=['timestep'] + 
+                        [f'state_{i}' for i in range(states.shape[1])] +
+                        [f'action_{i}' for i in range(actions.shape[1])] +
+                        ['reward']
+            )
+            
+            csv = df_export.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"{st.session_state.current_dataset}_data.csv",
+                mime="text/csv"
+            )
+        
+        # Display table
+        df_display = pd.DataFrame(
+            np.hstack([
+                np.arange(len(states[:show_rows])).reshape(-1, 1),
+                states[:show_rows],
+                actions[:show_rows],
+                rewards[:show_rows].reshape(-1, 1)
+            ]),
+            columns=['timestep'] + 
+                    [f'state_{i}' for i in range(states.shape[1])] +
+                    [f'action_{i}' for i in range(actions.shape[1])] +
+                    ['reward']
+        )
+        
+        st.dataframe(
+            df_display.style.format("{:.4f}"),
+            use_container_width=True,
+            height=400
+        )
     
     # Rewards & Actions
     with tabs[tab_offset + 1]:
@@ -798,6 +888,48 @@ def main():
                 ))
             fig_action.update_layout(xaxis_title='Timestep', yaxis_title='Action Value', height=400)
             st.plotly_chart(fig_action, use_container_width=True)
+            
+            # Reward-Action correlation
+            st.subheader("Reward vs Actions")
+            fig_reward_action = go.Figure()
+            for i in range(actions.shape[1]):
+                fig_reward_action.add_trace(go.Scatter(
+                    x=actions[:, i],
+                    y=rewards,
+                    mode='markers',
+                    name=f'Action {i}',
+                    opacity=0.6
+                ))
+            fig_reward_action.update_layout(
+                xaxis_title='Action Value',
+                yaxis_title='Reward',
+                height=400
+            )
+            st.plotly_chart(fig_reward_action, use_container_width=True)
+        
+        # Raw Data Table
+        st.markdown("---")
+        st.subheader("📋 Rewards & Actions Data")
+        
+        show_reward_rows = st.slider("Number of rows to display", 10, 100, 50, 10, key="reward_rows")
+        
+        # Display table
+        df_rewards = pd.DataFrame(
+            np.hstack([
+                np.arange(len(rewards[:show_reward_rows])).reshape(-1, 1),
+                actions[:show_reward_rows],
+                rewards[:show_reward_rows].reshape(-1, 1)
+            ]),
+            columns=['timestep'] + 
+                    [f'action_{i}' for i in range(actions.shape[1])] +
+                    ['reward']
+        )
+        
+        st.dataframe(
+            df_rewards.style.format("{:.4f}"),
+            use_container_width=True,
+            height=400
+        )
     
     # Symmetry Analysis
     with tabs[tab_offset + 2]:

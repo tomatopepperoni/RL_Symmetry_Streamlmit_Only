@@ -20,6 +20,7 @@ from sklearn.cluster import KMeans, DBSCAN
 from sklearn.preprocessing import StandardScaler
 from scipy.spatial.distance import cdist
 import io
+import seaborn as sns
 
 # Add the project root to the path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -77,6 +78,32 @@ def init_session_state():
         st.session_state.comparison_mode = False
     if 'analysis_cache' not in st.session_state:
         st.session_state.analysis_cache = {}
+
+
+def load_sample_csv_data(csv_path):
+    """Load sample CSV data from the data/ directory."""
+    try:
+        df = pd.read_csv(csv_path)
+        
+        # Extract states (left/right hip, torso positions)
+        state_cols = [c for c in df.columns if any(x in c for x in ['left_hip', 'right_hip', 'torso']) and '_v' not in c]
+        states = df[state_cols].values if state_cols else df[['time']].values
+        
+        # Extract actions (velocities)
+        action_cols = [c for c in df.columns if '_v' in c]
+        actions = df[action_cols].values if action_cols else np.zeros((len(df), 1))
+        
+        # Extract rewards
+        rewards = df['reward'].values if 'reward' in df.columns else np.ones(len(df))
+        
+        # Create next_states
+        next_states = np.roll(states, -1, axis=0)
+        next_states[-1] = states[-1]
+        
+        return states, actions, rewards, next_states
+    except Exception as e:
+        st.error(f"Error loading CSV: {str(e)}")
+        return None, None, None, None
 
 
 def create_demo_data(timesteps=1000, dim_state=8, dim_action=2, noise_level=0.1):
@@ -265,6 +292,170 @@ def compare_datasets(datasets_dict, metric='reward', window=10):
     return fig
 
 
+def plot_state_action_correlation(states, actions):
+    """Create correlation heatmap between states and actions."""
+    # Combine states and actions
+    combined = np.hstack([states, actions])
+    n_states = states.shape[1]
+    n_actions = actions.shape[1]
+    
+    # Calculate correlation
+    corr_matrix = np.corrcoef(combined.T)
+    
+    # Extract state-action correlation block
+    state_action_corr = corr_matrix[:n_states, n_states:]
+    
+    # Create labels
+    state_labels = [f'S{i}' for i in range(n_states)]
+    action_labels = [f'A{i}' for i in range(n_actions)]
+    
+    fig = go.Figure(data=go.Heatmap(
+        z=state_action_corr,
+        x=action_labels,
+        y=state_labels,
+        colorscale='RdBu',
+        zmid=0,
+        text=np.round(state_action_corr, 2),
+        texttemplate='%{text}',
+        textfont={"size": 10},
+        colorbar=dict(title="Correlation")
+    ))
+    
+    fig.update_layout(
+        title='State-Action Correlation Matrix',
+        xaxis_title='Actions',
+        yaxis_title='States',
+        height=400
+    )
+    return fig
+
+
+def plot_trajectory_3d(states, color_by_time=True):
+    """Create 3D trajectory visualization."""
+    if states.shape[1] < 3:
+        return None
+    
+    if color_by_time:
+        fig = go.Figure(data=[go.Scatter3d(
+            x=states[:, 0],
+            y=states[:, 1],
+            z=states[:, 2],
+            mode='lines+markers',
+            marker=dict(
+                size=3,
+                color=np.arange(len(states)),
+                colorscale='Viridis',
+                showscale=True,
+                colorbar=dict(title="Time")
+            ),
+            line=dict(color='rgba(100,100,100,0.3)', width=2)
+        )])
+    else:
+        fig = go.Figure(data=[go.Scatter3d(
+            x=states[:, 0],
+            y=states[:, 1],
+            z=states[:, 2],
+            mode='lines',
+            line=dict(color='blue', width=3)
+        )])
+    
+    fig.update_layout(
+        title='3D Trajectory Visualization',
+        scene=dict(
+            xaxis_title='Dimension 0',
+            yaxis_title='Dimension 1',
+            zaxis_title='Dimension 2'
+        ),
+        height=600
+    )
+    return fig
+
+
+def plot_velocity_acceleration(states):
+    """Analyze velocity and acceleration from state changes."""
+    # Calculate velocity (first derivative)
+    velocity = np.diff(states, axis=0)
+    velocity_magnitude = np.linalg.norm(velocity, axis=1)
+    
+    # Calculate acceleration (second derivative)
+    acceleration = np.diff(velocity, axis=0)
+    acceleration_magnitude = np.linalg.norm(acceleration, axis=1)
+    
+    fig = make_subplots(rows=2, cols=1, subplot_titles=("Velocity Magnitude", "Acceleration Magnitude"))
+    
+    fig.add_trace(
+        go.Scatter(x=np.arange(len(velocity_magnitude)), y=velocity_magnitude, 
+                   mode='lines', name='Velocity', line=dict(color='blue')),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=np.arange(len(acceleration_magnitude)), y=acceleration_magnitude,
+                   mode='lines', name='Acceleration', line=dict(color='red')),
+        row=2, col=1
+    )
+    
+    fig.update_xaxes(title_text="Timestep", row=2, col=1)
+    fig.update_yaxes(title_text="Magnitude", row=1, col=1)
+    fig.update_yaxes(title_text="Magnitude", row=2, col=1)
+    fig.update_layout(height=600, showlegend=False)
+    
+    return fig, velocity_magnitude, acceleration_magnitude
+
+
+def plot_action_energy(actions):
+    """Calculate and plot action energy (magnitude)."""
+    action_energy = np.linalg.norm(actions, axis=1)
+    cumulative_energy = np.cumsum(action_energy)
+    
+    fig = make_subplots(rows=1, cols=2, subplot_titles=("Action Energy", "Cumulative Energy"))
+    
+    fig.add_trace(
+        go.Scatter(x=np.arange(len(action_energy)), y=action_energy,
+                   mode='lines', name='Energy', line=dict(color='purple')),
+        row=1, col=1
+    )
+    
+    fig.add_trace(
+        go.Scatter(x=np.arange(len(cumulative_energy)), y=cumulative_energy,
+                   mode='lines', name='Cumulative', line=dict(color='orange')),
+        row=1, col=2
+    )
+    
+    fig.update_xaxes(title_text="Timestep")
+    fig.update_yaxes(title_text="Energy")
+    fig.update_layout(height=400, showlegend=False)
+    
+    return fig, action_energy
+
+
+def generate_statistics_report(states, actions, rewards):
+    """Generate comprehensive statistics report."""
+    stats = {
+        "States": {
+            "Mean": np.mean(states, axis=0),
+            "Std": np.std(states, axis=0),
+            "Min": np.min(states, axis=0),
+            "Max": np.max(states, axis=0),
+        },
+        "Actions": {
+            "Mean": np.mean(actions, axis=0),
+            "Std": np.std(actions, axis=0),
+            "Min": np.min(actions, axis=0),
+            "Max": np.max(actions, axis=0),
+        },
+        "Rewards": {
+            "Total": np.sum(rewards),
+            "Mean": np.mean(rewards),
+            "Std": np.std(rewards),
+            "Min": np.min(rewards),
+            "Max": np.max(rewards),
+            "Median": np.median(rewards),
+        }
+    }
+    return stats
+
+
 def main():
     """Main dashboard application."""
     init_session_state()
@@ -320,36 +511,69 @@ def main():
                     st.error(f"❌ Error: {str(e)}")
         
         elif data_source == "Generate Demo Data":
-            st.subheader("Demo Data Parameters")
-            demo_timesteps = st.slider("Timesteps", 100, 2000, 1000, 100)
-            demo_state_dim = st.slider("State Dimension", 2, 16, 8, 2)
-            demo_action_dim = st.slider("Action Dimension", 1, 8, 2, 1)
-            demo_noise = st.slider("Noise Level", 0.0, 1.0, 0.1, 0.05)
+            demo_type = st.radio("Demo Data Type", ["🤖 Synthetic Pattern", "📁 Load Sample CSV"])
             
-            dataset_name = st.text_input("Dataset Name", "demo_data")
+            if demo_type == "📁 Load Sample CSV":
+                # Check for available CSV files
+                data_dir = Path("data")
+                if data_dir.exists():
+                    csv_files = list(data_dir.glob("*.csv"))
+                    if csv_files:
+                        selected_csv = st.selectbox("Select Sample CSV", [f.name for f in csv_files])
+                        dataset_name = st.text_input("Dataset Name", selected_csv.replace('.csv', ''))
+                        
+                        if st.button("Load Sample CSV"):
+                            csv_path = data_dir / selected_csv
+                            states, actions, rewards, next_states = load_sample_csv_data(csv_path)
+                            
+                            if states is not None:
+                                st.session_state.datasets[dataset_name] = {
+                                    "states": states,
+                                    "actions": actions,
+                                    "rewards": rewards,
+                                    "next_states": next_states,
+                                    "source": str(csv_path),
+                                    "timestamp": datetime.now()
+                                }
+                                st.session_state.current_dataset = dataset_name
+                                st.success(f"✅ Loaded {len(states)} timesteps from {selected_csv}")
+                                st.rerun()
+                    else:
+                        st.warning("No CSV files found in data/ directory")
+                else:
+                    st.warning("data/ directory not found")
             
-            if st.button("Generate Data"):
-                states, actions, rewards, next_states = create_demo_data(
-                    demo_timesteps, demo_state_dim, demo_action_dim, demo_noise
-                )
+            else:  # Synthetic Pattern
+                st.subheader("Demo Data Parameters")
+                demo_timesteps = st.slider("Timesteps", 100, 2000, 1000, 100)
+                demo_state_dim = st.slider("State Dimension", 2, 16, 8, 2)
+                demo_action_dim = st.slider("Action Dimension", 1, 8, 2, 1)
+                demo_noise = st.slider("Noise Level", 0.0, 1.0, 0.1, 0.05)
                 
-                st.session_state.datasets[dataset_name] = {
-                    "states": states,
-                    "actions": actions,
-                    "rewards": rewards,
-                    "next_states": next_states,
-                    "source": "demo",
-                    "timestamp": datetime.now(),
-                    "params": {
-                        "timesteps": demo_timesteps,
-                        "state_dim": demo_state_dim,
-                        "action_dim": demo_action_dim,
-                        "noise": demo_noise
+                dataset_name = st.text_input("Dataset Name", "demo_data")
+                
+                if st.button("Generate Data"):
+                    states, actions, rewards, next_states = create_demo_data(
+                        demo_timesteps, demo_state_dim, demo_action_dim, demo_noise
+                    )
+                    
+                    st.session_state.datasets[dataset_name] = {
+                        "states": states,
+                        "actions": actions,
+                        "rewards": rewards,
+                        "next_states": next_states,
+                        "source": "demo",
+                        "timestamp": datetime.now(),
+                        "params": {
+                            "timesteps": demo_timesteps,
+                            "state_dim": demo_state_dim,
+                            "action_dim": demo_action_dim,
+                            "noise": demo_noise
+                        }
                     }
-                }
-                st.session_state.current_dataset = dataset_name
-                st.success(f"✅ Generated {demo_timesteps} timesteps")
-                st.rerun()
+                    st.session_state.current_dataset = dataset_name
+                    st.success(f"✅ Generated {demo_timesteps} timesteps")
+                    st.rerun()
         
         elif data_source == "Compare Multiple":
             st.session_state.comparison_mode = True
@@ -423,7 +647,7 @@ def main():
     
     # Tabs
     if st.session_state.comparison_mode and len(st.session_state.datasets) > 1:
-        tabs = st.tabs(["📊 Comparison", "🎯 Trajectory", "💰 Rewards", "🔄 Symmetry", "🧩 Clustering", "ℹ️ About"])
+        tabs = st.tabs(["📊 Comparison", "🎯 Trajectory", "💰 Rewards", "🔄 Symmetry", "🧩 Clustering", "🔬 Advanced", "ℹ️ About"])
         
         with tabs[0]:
             st.header("Dataset Comparison")
@@ -463,7 +687,7 @@ def main():
         
         tab_offset = 1
     else:
-        tabs = st.tabs(["🎯 Trajectory", "💰 Rewards", "🔄 Symmetry", "🧩 Clustering", "ℹ️ About"])
+        tabs = st.tabs(["🎯 Trajectory", "💰 Rewards", "🔄 Symmetry", "🧩 Clustering", "🔬 Advanced", "ℹ️ About"])
         tab_offset = 0
     
     # Trajectory Analysis
@@ -779,6 +1003,209 @@ def main():
                 st.plotly_chart(fig_anom, use_container_width=True)
             else:
                 st.info("Click 'Run Clustering' to start analysis.")
+    
+    # Advanced Analysis
+    with tabs[tab_offset + 4]:
+        st.header("Advanced Analysis Tools")
+        st.markdown("""
+        **Deep dive into agent behavior with advanced visualizations**
+        - State-action correlations
+        - 3D trajectory visualization
+        - Velocity and acceleration analysis
+        - Action energy metrics
+        - Statistical reports
+        """)
+        
+        analysis_tabs = st.tabs(["📊 Correlations", "🌐 3D View", "⚡ Dynamics", "🔋 Energy", "📈 Statistics"])
+        
+        # Correlations
+        with analysis_tabs[0]:
+            st.subheader("State-Action Correlation Analysis")
+            st.markdown("""
+            **Understanding how states influence actions**
+            - Red: Positive correlation (state increases → action increases)
+            - Blue: Negative correlation (state increases → action decreases)
+            - White: No correlation
+            """)
+            
+            fig_corr = plot_state_action_correlation(states, actions)
+            st.plotly_chart(fig_corr, use_container_width=True)
+            
+            # Additional correlation insights
+            st.subheader("Correlation Insights")
+            combined = np.hstack([states, actions])
+            full_corr = np.corrcoef(combined.T)
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                st.metric("Avg State Correlation", f"{np.mean(np.abs(full_corr[:states.shape[1], :states.shape[1]])):.3f}")
+            with col2:
+                st.metric("Avg Action Correlation", f"{np.mean(np.abs(full_corr[states.shape[1]:, states.shape[1]:])):.3f}")
+        
+        # 3D Visualization
+        with analysis_tabs[1]:
+            st.subheader("3D Trajectory Visualization")
+            st.markdown("""
+            **Explore agent movement in 3D space**
+            - First 3 dimensions of state space
+            - Color gradient shows temporal progression
+            - Rotate and zoom to explore from different angles
+            """)
+            
+            if states.shape[1] >= 3:
+                color_3d = st.checkbox("Color by time (3D)", value=True)
+                
+                # Time range for 3D
+                max_3d = min(1000, len(states))
+                range_3d = st.slider("3D visualization range", 0, len(states), (0, max_3d), key="3d_range")
+                
+                states_3d = states[range_3d[0]:range_3d[1]]
+                fig_3d = plot_trajectory_3d(states_3d, color_by_time=color_3d)
+                
+                if fig_3d:
+                    st.plotly_chart(fig_3d, use_container_width=True)
+                    
+                    # 3D Statistics
+                    st.subheader("3D Trajectory Metrics")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        path_length = np.sum(np.linalg.norm(np.diff(states_3d[:, :3], axis=0), axis=1))
+                        st.metric("Path Length", f"{path_length:.2f}")
+                    with col2:
+                        bbox_size = np.ptp(states_3d[:, :3], axis=0)
+                        st.metric("Bounding Box Volume", f"{np.prod(bbox_size):.3f}")
+                    with col3:
+                        centroid = np.mean(states_3d[:, :3], axis=0)
+                        st.metric("Centroid Distance", f"{np.linalg.norm(centroid):.3f}")
+            else:
+                st.warning("Need at least 3 state dimensions for 3D visualization")
+        
+        # Dynamics Analysis
+        with analysis_tabs[2]:
+            st.subheader("Velocity & Acceleration Analysis")
+            st.markdown("""
+            **Analyze movement dynamics**
+            - Velocity: Rate of state change (first derivative)
+            - Acceleration: Rate of velocity change (second derivative)
+            - High values indicate rapid movements or jerky behavior
+            """)
+            
+            fig_dynamics, velocity_mag, accel_mag = plot_velocity_acceleration(states)
+            st.plotly_chart(fig_dynamics, use_container_width=True)
+            
+            # Dynamics statistics
+            st.subheader("Dynamics Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Mean Velocity", f"{np.mean(velocity_mag):.4f}")
+            with col2:
+                st.metric("Max Velocity", f"{np.max(velocity_mag):.4f}")
+            with col3:
+                st.metric("Mean Acceleration", f"{np.mean(accel_mag):.4f}")
+            with col4:
+                st.metric("Max Acceleration", f"{np.max(accel_mag):.4f}")
+            
+            # Smoothness analysis
+            st.subheader("Movement Smoothness")
+            jerk = np.diff(accel_mag)  # Third derivative
+            smoothness_score = 1.0 / (1.0 + np.std(jerk))
+            st.metric("Smoothness Score", f"{smoothness_score:.3f}", 
+                     help="Higher = smoother movement (0-1 scale)")
+        
+        # Energy Analysis
+        with analysis_tabs[3]:
+            st.subheader("Action Energy Analysis")
+            st.markdown("""
+            **Measure control effort and efficiency**
+            - Action Energy: Magnitude of action vectors
+            - High energy = aggressive control
+            - Low energy = gentle/efficient control
+            """)
+            
+            fig_energy, action_energy = plot_action_energy(actions)
+            st.plotly_chart(fig_energy, use_container_width=True)
+            
+            # Energy statistics
+            st.subheader("Energy Metrics")
+            col1, col2, col3, col4 = st.columns(4)
+            with col1:
+                st.metric("Total Energy", f"{np.sum(action_energy):.2f}")
+            with col2:
+                st.metric("Mean Energy", f"{np.mean(action_energy):.4f}")
+            with col3:
+                st.metric("Peak Energy", f"{np.max(action_energy):.4f}")
+            with col4:
+                efficiency = np.sum(rewards) / (np.sum(action_energy) + 1e-6)
+                st.metric("Efficiency (Reward/Energy)", f"{efficiency:.3f}")
+            
+            # Energy distribution
+            st.subheader("Energy Distribution")
+            fig_hist = px.histogram(x=action_energy, nbins=50, 
+                                   labels={"x": "Action Energy", "y": "Frequency"},
+                                   title="Action Energy Distribution")
+            fig_hist.update_layout(height=300)
+            st.plotly_chart(fig_hist, use_container_width=True)
+        
+        # Statistics Report
+        with analysis_tabs[4]:
+            st.subheader("Comprehensive Statistics Report")
+            st.markdown("""
+            **Detailed statistical summary of all data**
+            - Mean, standard deviation, min/max for all dimensions
+            - Downloadable as JSON
+            """)
+            
+            stats = generate_statistics_report(states, actions, rewards)
+            
+            # Rewards stats
+            st.subheader("📊 Reward Statistics")
+            reward_df = pd.DataFrame([stats["Rewards"]]).T
+            reward_df.columns = ["Value"]
+            st.dataframe(reward_df, use_container_width=True)
+            
+            # States stats
+            st.subheader("📐 State Statistics")
+            state_stats_dict = {}
+            for stat_name, values in stats["States"].items():
+                for i, val in enumerate(values):
+                    if f"Dim {i}" not in state_stats_dict:
+                        state_stats_dict[f"Dim {i}"] = {}
+                    state_stats_dict[f"Dim {i}"][stat_name] = f"{val:.4f}"
+            
+            state_df = pd.DataFrame(state_stats_dict).T
+            st.dataframe(state_df, use_container_width=True)
+            
+            # Actions stats
+            st.subheader("🎮 Action Statistics")
+            action_stats_dict = {}
+            for stat_name, values in stats["Actions"].items():
+                for i, val in enumerate(values):
+                    if f"Action {i}" not in action_stats_dict:
+                        action_stats_dict[f"Action {i}"] = {}
+                    action_stats_dict[f"Action {i}"][stat_name] = f"{val:.4f}"
+            
+            action_df = pd.DataFrame(action_stats_dict).T
+            st.dataframe(action_df, use_container_width=True)
+            
+            # Download button
+            if st.button("💾 Download Full Report (JSON)"):
+                # Convert numpy arrays to lists for JSON serialization
+                json_stats = {}
+                for key, val in stats.items():
+                    json_stats[key] = {}
+                    for sub_key, sub_val in val.items():
+                        if isinstance(sub_val, np.ndarray):
+                            json_stats[key][sub_key] = sub_val.tolist()
+                        else:
+                            json_stats[key][sub_key] = float(sub_val)
+                
+                json_str = json.dumps(json_stats, indent=2)
+                st.download_button(
+                    label="Download JSON",
+                    data=json_str,
+                    file_name=f"statistics_report_{st.session_state.current_dataset}.json",
+                    mime="application/json"
+                )
     
     # About
     with tabs[-1]:
